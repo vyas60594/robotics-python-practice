@@ -1,44 +1,47 @@
-"""Codeavour Track 2 - Challenge 1: identify a waste AprilTag.
+"""Codeavour Track 2 — Challenge 1 waste identification.
 
-Uses the VERIFIED Intellio UDP camera scanner in intellio_apriltag_scanner.py.
-Runs in computer-side Python/PictoBlox Stage Mode (not standalone robot firmware).
+Uses the generic `april_tag_detector.py` module to read the Intellio camera.
+This file alone maps AprilTag identities to waste categories.
 
-Keys: Q = quit, S = save raw & annotated images.
+ 
+
+Runs in PictoBlox Python Stage Mode on the COMPUTER (not standalone robot).
+Requires the existing Intellio UDP JPEG sender to be active.
+Keys: S = save frames, Q = cancel.
 """
 import time
-from pathlib import Path
 
 import cv2
 
-from April_tag_detector import (
+from april_tag_detector import (
     IntellioCamera,
     AprilTagScanner,
-    annotate,
-    save_images
+    display_image,
+    save_images,
+    tobi,
 )
-ORGANIC_TAG = ("16h5", 6)
-# IMPORTANT: Set only after independently scanning the Inorganic marker.
-# Example format: ("16h5", 12). Do NOT assume its ID is 5.
-INORGANIC_TAG = None
 
-# Two fresh camera frames are required for a confirmed classification.
+# -------- CHALLENGE 1 SETTINGS --------
+ORGANIC_TAG = ("16h5", 6)           # Verified using your Intellio camera
+INORGANIC_TAG = ("16h5", 5)                # Set to ("16h5", <measured_id>) later
 REQUIRED_MATCHING_FRAMES = 2
-SCAN_TIMEOUT_SECONDS = 5.0      # Starts after the first valid camera frame
-CAMERA_START_TIMEOUT = 12.0     # Max time to wait for the first valid frame
-REPORT_INTERVAL_SECONDS = 1.0
+CAMERA_START_TIMEOUT = 12.0        # Seconds waiting for the first camera frame
+SCAN_TIMEOUT = 5.0                 # Seconds after the first camera frame
+NO_FRAME_SLEEP = 0.02
+STATUS_INTERVAL = 1.0
 
 
 def classify(tags, image_width):
-    """Return ((family, id), label) for the known tag closest to center.
+    """Return ((family, id), category) for the marker nearest image center.
 
-    Unknown detected tags are reported but never classified as Inorganic.
+    Unrecognized IDs are UNKNOWN, never assumed to be inorganic.
     """
     if not tags:
         return None, "NO TAG"
 
-    # Center position belongs to the view returned by AprilTagScanner.scan().
-    nearest = min(tags, key=lambda t: abs(t["center"][0] - image_width / 2))
-    identity = (nearest["family"], nearest["id"])
+    marker = min(tags, key=lambda tag: abs(tag["center"][0] - image_width / 2))
+    identity = (marker["family"], marker["id"])
+
     if identity == ORGANIC_TAG:
         return identity, "ORGANIC WASTE"
     if INORGANIC_TAG is not None and identity == INORGANIC_TAG:
@@ -47,88 +50,96 @@ def classify(tags, image_width):
 
 
 def run_scan():
+    """Read fresh camera frames until a known category is confirmed or timed out.
+
+    Returns one of: ORGANIC WASTE, INORGANIC WASTE, NO CONFIRMED TAG,
+    CAMERA TIMEOUT, CANCELLED.
+    """
     if INORGANIC_TAG is not None and INORGANIC_TAG == ORGANIC_TAG:
-        raise ValueError("Organic and Inorganic markers must have different identities")
+        raise ValueError("Organic and inorganic marker IDs must differ")
     if REQUIRED_MATCHING_FRAMES < 1:
-        raise ValueError("REQUIRED_MATCHING_FRAMES must be >= 1")
+        raise ValueError("REQUIRED_MATCHING_FRAMES must be at least 1")
 
-    scanner = AprilTagScanner(families=("16h5",))
-    camera = IntellioCamera()  # Ensure no other script is listening on the same UDP port!
+    families = (ORGANIC_TAG[0],) if INORGANIC_TAG is None else tuple(
+        sorted({ORGANIC_TAG[0], INORGANIC_TAG[0]})
+    )
+    scanner = AprilTagScanner(families=families)
+    camera = IntellioCamera()  # Run only one UDP receiver on port 6000.
 
-    previous_identity = None
-    streak = 0
     last_sequence = 0
+    previous_identity = None
+    consecutive = 0
     connected_at = time.monotonic()
     scan_started = None
-    last_report = 0.0
+    last_status = 0.0
     outcome = "NO CONFIRMED TAG"
-    latest_raw = None
-    latest_display = None
+    last_raw = None
+    last_preview = None
 
+    print("Challenge 1: waiting for Intellio camera frames...")
     try:
         while True:
             now = time.monotonic()
+            if scan_started is None and now - connected_at >= CAMERA_START_TIMEOUT:
+                outcome = "CAMERA TIMEOUT"
+                print("Camera timeout: check the Intellio UDP sender and port.")
+                break
+            if scan_started is not None and now - scan_started >= SCAN_TIMEOUT:
+                print("Scan timeout: no confirmed known waste marker.")
+                break
+
             frame, sequence = camera.read_new(last_sequence)
             if frame is None:
-                if scan_started is None and now - connected_at > CAMERA_START_TIMEOUT:
-                    outcome = "CAMERA TIMEOUT"
-                    print("No valid Intellio frames. Confirm stream sender, host and port.")
-                    break
-                if scan_started is not None and now - scan_started >= SCAN_TIMEOUT_SECONDS:
-                    print("No confirmed waste marker before timeout.")
-                    break
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     outcome = "CANCELLED"
                     break
-                time.sleep(0.02)
+                time.sleep(NO_FRAME_SLEEP)
                 continue
 
             last_sequence = sequence
             if scan_started is None:
                 scan_started = time.monotonic()
-                print("Intellio camera connected. Scanning Challenge 1 marker...")
+                print("Camera connected. Scanning AprilTag...")
 
-            tags, variant, view, _diagnostics = scanner.scan(frame)
+            # Keep the proven mirrored-first + fallback pipeline in the scanner.
+            tags, variant, view = scanner.scan(frame)
             identity, label = classify(tags, view.shape[1])
 
             if label in ("ORGANIC WASTE", "INORGANIC WASTE"):
-                if identity == previous_identity:
-                    streak += 1
-                else:
-                    streak = 1
+                consecutive = consecutive + 1 if identity == previous_identity else 1
                 previous_identity = identity
             else:
+                consecutive = 0
                 previous_identity = None
-                streak = 0
 
-            latest_raw = frame
-            latest_display = annotate(view, tags, variant)
-            cv2.putText(latest_display, f"Waste: {label}", (12, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
-            cv2.imshow("Challenge 1 | S save | Q quit", latest_display)
+            last_raw = frame
+            last_preview = display_image(view, tags, variant)
+            cv2.putText(last_preview, f"Waste: {label}", (12, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.imshow("Challenge 1 | S save | Q quit", last_preview)
 
-            if time.monotonic() - last_report >= REPORT_INTERVAL_SECONDS:
-                if identity is not None:
-                    print(f"Seen family={identity[0]}, id={identity[1]} -> {label} "
-                          f"(confirmed frames: {streak}/{REQUIRED_MATCHING_FRAMES})")
-                else:
+            if time.monotonic() - last_status >= STATUS_INTERVAL:
+                if identity is None:
                     print("No AprilTag visible")
-                last_report = time.monotonic()
+                else:
+                    print(f"Seen {identity[0]} ID:{identity[1]} -> {label} "
+                          f"({consecutive}/{REQUIRED_MATCHING_FRAMES} frames)")
+                last_status = time.monotonic()
 
-            if streak >= REQUIRED_MATCHING_FRAMES:
+            # Tobi comes from PictoBlox, created in the generic detector module.
+            # It should report category only in this challenge-specific program.
+            if consecutive >= REQUIRED_MATCHING_FRAMES:
                 outcome = label
-                print(f"CONFIRMED | family={identity[0]} | id={identity[1]} | {outcome}")
+                print(f"CONFIRMED: {identity[0]} ID:{identity[1]} = {outcome}")
+                tobi.say(f"AprilTag ID {identity[1]}: {outcome}")
                 break
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 outcome = "CANCELLED"
                 break
-            if key == ord("s") and latest_raw is not None:
-                save_images(latest_raw, latest_display)
-            if time.monotonic() - scan_started >= SCAN_TIMEOUT_SECONDS:
-                print("No confirmed waste marker before timeout.")
-                break
+            if key == ord("s") and last_raw is not None:
+                save_images(last_raw, last_preview)
 
         print("Final result:", outcome)
         return outcome
