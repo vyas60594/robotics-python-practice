@@ -1,4 +1,4 @@
- """Generic Intellio AprilTag detector for PictoBlox Python Stage Mode.
+"""Generic Intellio AprilTag detector for PictoBlox Python Stage Mode.
 
 Receives JPEG frames from an ALREADY RUNNING Intellio UDP sender using:
     b'SIZE:<N>' datagram followed by ordered JPEG payload datagrams.
