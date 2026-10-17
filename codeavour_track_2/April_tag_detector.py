@@ -26,6 +26,7 @@ TRANSFER_TIMEOUT = 1.0
 MAX_JPEG_BYTES = 2_000_000
 STATUS_INTERVAL = 3.0
 SAVE_DIR = Path("intellio_diagnostics")
+SPEECH_COOLDOWN = 1.0
  
 FAMILY_CONSTANTS = {
     "16h5": "DICT_APRILTAG_16h5",
@@ -34,6 +35,32 @@ FAMILY_CONSTANTS = {
 }
  
  
+# Mini Expansion Board motor configuration
+MOTOR_SPEED = 40
+MOTOR_DURATION = 2.0
+
+FORWARD = 1
+BACKWARD = 2
+
+def move_waste_motor(mini, category):
+    if category == "ORGANIC WASTE":
+        direction = FORWARD
+        print("Organic detected -> Moving FORWARD")
+
+    elif category == "INORGANIC WASTE":
+        direction = BACKWARD
+        print("Inorganic detected -> Moving BACKWARD")
+
+    else:
+        return
+
+    try:
+        mini.runbobot(direction, MOTOR_SPEED)
+        time.sleep(MOTOR_DURATION)
+    finally:
+        mini.stoprobot()
+        print("Motor stopped after 2 seconds")
+
 # ---------- TOBI / GUI HELPERS (safe outside PictoBlox) ----------
 def create_tobi(sprite_class=None):
     """Create the Tobi sprite if PictoBlox's Sprite exists; otherwise None."""
