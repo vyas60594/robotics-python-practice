@@ -1,238 +1,336 @@
-"""Codeavour 8.0 Track 2 - Challenge 6: Smart Grid recognition and motor test.
-
-Elementary: AprilTag 16h5 ID 1 -> Residential, ID 2 -> Business.
-Junior/Senior: IDs 1+3 -> Residential, IDs 2+4 -> Business.
-
-Residential -> drive FORWARD for 3 seconds.
-Business -> drive BACKWARD for 3 seconds.
-
-The first confirmed decision triggers exactly one movement, then the
-program stops. Q quits before any detection.
-
-PictoBlox Python Stage Mode, Mini Expansion Board extension,
-April_tag_detector.py and existing Intellio UDP JPEG sender required.
-"""
 
 import time
 import cv2
 
 from April_tag_detector import (
-    IntellioCamera, AprilTagScanner, display_image,
-    create_tobi, safe_say, show_window, read_key, close_windows
+    IntellioCamera,
+    AprilTagScanner,
+    display_image,
+    show_window,
+    read_key,
+    close_windows
 )
 
-# ---------- CONFIGURATION ----------
-AGE_GROUP = "ELEMENTARY"  # or "JUNIOR_SENIOR"
+# ==========================================
+# CONFIGURATION
+# ==========================================
+
 FAMILY = "16h5"
-ELEMENTARY_ZONES = {1: "RESIDENTIAL", 2: "BUSINESS"}
-RESIDENTIAL_PAIR = frozenset((1, 3))
-BUSINESS_PAIR = frozenset((2, 4))
-VALID_IDS = frozenset((1, 2, 3, 4))
-WANTED = {(FAMILY, tag_id) for tag_id in VALID_IDS}
 
-CONFIRM_FRAMES = 1  # Fast; change to 2 if misreads occur.
-MEMORY_SECONDS = {"ELEMENTARY": 0.8, "JUNIOR_SENIOR": 4.0}
-CAMERA_START_TIMEOUT = 12.0
-IDLE_SLEEP = 0.005
-WINDOW_NAME = "Challenge 6 | Q quit"
+MOTOR_1 = "L"
+MOTOR_2 = "R"
 
-MOTOR_PORTS = ("L", "R")
-MOTOR_SPEED = 100
-MOTOR_SECONDS = 3.0
-# Match these direction values to your installed Mini Expansion Board.
-FORWARD_DIRECTION = "1"
-BACKWARD_DIRECTION = "2"
+FORWARD = "1"
+BACKWARD = "2"
+
+WINDOW_NAME = "Challenge 6 - Smart Grid"
+
+CAMERA_TIMEOUT = 12
+SCAN_TIMEOUT = 30
+
+# Time allowed to collect multiple tags
+DETECTION_TIME = 4.0
+
+# Number of consecutive frames needed
+CONFIRM_FRAMES = 2
 
 
-def decide(recent_ids):
-    if AGE_GROUP == "ELEMENTARY":
-        present = recent_ids.intersection(ELEMENTARY_ZONES)
-        if len(present) == 1:
-            return ELEMENTARY_ZONES[next(iter(present))]
+# ==========================================
+# APRILTAG DECISION
+# ==========================================
+
+def decide(ids):
+
+    # Junior/Senior: paired AprilTags
+    residential_pair = {1, 3}.issubset(ids)
+    business_pair = {2, 4}.issubset(ids)
+
+    if residential_pair and not business_pair:
+        return "RESIDENTIAL"
+
+    if business_pair and not residential_pair:
+        return "BUSINESS"
+
+    # Do not choose if both pairs are present
+    if residential_pair and business_pair:
         return None
 
-    residential = RESIDENTIAL_PAIR.issubset(recent_ids)
-    business = BUSINESS_PAIR.issubset(recent_ids)
-    if residential == business:
-        return None
-    return "RESIDENTIAL" if residential else "BUSINESS"
+    # Elementary: single AprilTag
+    # Only decide when no Junior/Senior tag
+    # (ID 3 or 4) has been detected.
+    if 3 not in ids and 4 not in ids:
+
+        if 1 in ids and 2 not in ids:
+            return "RESIDENTIAL"
+
+        if 2 in ids and 1 not in ids:
+            return "BUSINESS"
+
+    return None
 
 
-def connect_motor():
-    factory = globals().get("QuarkyMiniExpansion")
-    if factory is None:
-        raise RuntimeError(
-            "QuarkyMiniExpansion unavailable. Run inside PictoBlox Python "
-            "Stage Mode with the Mini Expansion Board extension enabled."
-        )
-    board = factory()
-    board.miniinitialise()
-    return board
+# ==========================================
+# CAMERA SCANNING
+# ==========================================
 
+def scan_power():
 
-def stop_motors(board):
-    for port in MOTOR_PORTS:
-        board.stopmotor(port)
-
-
-
-def move_for_decision(board, zone):
-    """Move for up to 3 seconds. Q stops both motors early."""
-
-    if zone == "RESIDENTIAL":
-        direction = FORWARD_DIRECTION
-        print("RESIDENTIAL -> FORWARD")
-
-    elif zone == "BUSINESS":
-        direction = BACKWARD_DIRECTION
-        print("BUSINESS -> BACKWARD")
-
-    else:
-        return False
-
-    try:
-        board.runmotor("L", direction, MOTOR_SPEED)
-        board.runmotor("R", direction, MOTOR_SPEED)
-
-        end_time = time.monotonic() + MOTOR_SECONDS
-
-        while time.monotonic() < end_time:
-
-            key = read_key()
-
-            if key in (ord("q"), ord("Q")):
-                print("Q pressed! Stopping immediately.")
-                return False
-
-            time.sleep(0.01)
-
-        print("3-second movement completed.")
-        return True
-
-    finally:
-        stop_motors(board)
-        print("Both motors stopped.")
-
-
-
-def draw_dashboard(view, tags, variant, zone, recent_ids):
-    preview = display_image(view, tags, variant)
-    height, width = preview.shape[:2]
-    label = (f"{zone} NEEDS POWER" if zone else "SCANNING - WAITING FOR TAGS")
-    color = (35, 140, 45) if zone == "RESIDENTIAL" else (
-        (175, 95, 25) if zone == "BUSINESS" else (75, 75, 75)
-    )
-    band_height = min(75, height)
-    top = height - band_height
-    cv2.rectangle(preview, (0, top), (width - 1, height - 1), color, -1)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = min(0.75, max(0.3, width / max(1, len(label) * 19)))
-    cv2.putText(preview, label, (8, top + min(31, band_height - 5)),
-                font, scale, (255, 255, 255), 2, cv2.LINE_AA)
-    if band_height >= 65:
-        ids = ",".join(map(str, sorted(recent_ids))) or "none"
-        info = f"{AGE_GROUP} | Confirmed IDs: {ids}"
-        cv2.putText(preview, info, (8, height - 12), font, 0.43,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-    return preview
-
-
-def run_scan():
-    if AGE_GROUP not in MEMORY_SECONDS:
-        raise ValueError("AGE_GROUP must be ELEMENTARY or JUNIOR_SENIOR")
-    if CONFIRM_FRAMES < 1:
-        raise ValueError("CONFIRM_FRAMES must be >= 1")
-
-    # Initialize the board independently of the camera.
-    board = connect_motor()
     camera = None
+    scanner = AprilTagScanner(
+        families=(FAMILY,)
+    )
+
+    wanted = {
+        (FAMILY, i)
+        for i in (1, 2, 3, 4)
+    }
+
+    last_sequence = 0
+    streak = {i: 0 for i in (1, 2, 3, 4)}
+
+    # Store every confirmed ID during scan
+    confirmed_ids = set()
+
+    start = time.monotonic()
+    first_frame_time = None
+
     try:
-        tobi = create_tobi(globals().get("Sprite"))
-        scanner = AprilTagScanner(families=(FAMILY,))
+        cv2.namedWindow(
+            WINDOW_NAME,
+            cv2.WINDOW_NORMAL
+        )
+
         camera = IntellioCamera()
 
-        streak = {tag_id: 0 for tag_id in VALID_IDS}
-        last_seen = {}
-        decision = None  # One-shot decision.
-        last_sequence = 0
-        started = time.monotonic()
-        received_first_frame = False
-        preview_data = None
-        print(f"Challenge 6: {AGE_GROUP} | Residential forward, Business backward")
+        print("Scanning power requirement...")
 
-        while True:
-            now = time.monotonic()
-            frame, sequence = camera.read_new(last_sequence)
-            if frame is not None:
-                last_sequence = sequence
-                received_first_frame = True
-                tags, variant, view = scanner.scan(frame, wanted=WANTED)
-                visible_ids = {tag["id"] for tag in tags
-                               if (tag["family"], tag["id"]) in WANTED}
-                for tag_id in VALID_IDS:
-                    streak[tag_id] = streak[tag_id] + 1 if tag_id in visible_ids else 0
-                    if streak[tag_id] >= CONFIRM_FRAMES:
-                        last_seen[tag_id] = time.monotonic()
-                preview_data = (view, tags, variant)
-            elif not received_first_frame and now - started >= CAMERA_START_TIMEOUT:
-                print("CAMERA TIMEOUT: check existing UDP JPEG sender on port 6000")
-                break
+        while time.monotonic() - start < SCAN_TIMEOUT:
 
-            now = time.monotonic()
-            memory_window = MEMORY_SECONDS[AGE_GROUP]
-            last_seen = {tag_id: ts for tag_id, ts in last_seen.items()
-                         if now - ts <= memory_window}
-            recent_ids = set(last_seen)
+            if read_key() in (ord("q"), ord("Q"), 27):
+                print("Scan cancelled")
+                return None
 
-            if decision is None:
-                new_decision = decide(recent_ids)
-                if new_decision is not None:
-                    decision = new_decision
-                    message = f"{decision.title()} needs power."
-                    print("DECISION:", message)
-                    # Display immediately before the blocking motor command.
-                    if preview_data is not None:
-                        view, tags, variant = preview_data
-                        show_window(WINDOW_NAME, draw_dashboard(
-                            view, tags, variant, decision, recent_ids))
-                        read_key()
-                     
-                    # Announce the decision.
-                    safe_say(tobi, message)
+            frame, sequence = camera.read_new(
+                last_sequence
+            )
 
-                    # Move for 3 seconds or stop early if Q is pressed.
-                    completed = move_for_decision(board, decision)
-
-                    if completed:
-                        print("Challenge 6 completed.")
-                    else:
-                        print("Challenge 6 cancelled by Q.")
-
-                    break
-
-
-            if frame is not None and preview_data is not None:
-                view, tags, variant = preview_data
-                show_window(WINDOW_NAME, draw_dashboard(
-                    view, tags, variant, decision, recent_ids))
-
-            key = read_key()
-            if key in (ord("q"), ord("Q")):
-                break
             if frame is None:
-                time.sleep(IDLE_SLEEP)
+
+                if (
+                    first_frame_time is None
+                    and time.monotonic() - start
+                    >= CAMERA_TIMEOUT
+                ):
+                    print("Camera timeout")
+                    return None
+
+                time.sleep(0.01)
+                continue
+
+            last_sequence = sequence
+
+            if first_frame_time is None:
+                first_frame_time = time.monotonic()
+
+            try:
+                tags, variant, view = scanner.scan(
+                    frame,
+                    wanted=wanted
+                )
+
+            except Exception as error:
+                print("Scanner error:", error)
+                continue
+
+            visible_ids = set()
+
+            for tag in tags:
+                family = tag["family"]
+
+                if isinstance(family, bytes):
+                    family = family.decode("utf-8")
+
+                tag_id = int(tag["id"])
+
+                if family == FAMILY and tag_id in (1, 2, 3, 4):
+                    visible_ids.add(tag_id)
+
+            # Confirm tags
+            for tag_id in (1, 2, 3, 4):
+
+                if tag_id in visible_ids:
+                    streak[tag_id] += 1
+                else:
+                    streak[tag_id] = 0
+
+                if streak[tag_id] >= CONFIRM_FRAMES:
+                    confirmed_ids.add(tag_id)
+
+            elapsed = time.monotonic() - first_frame_time
+
+            # Wait for the collection window
+            # so Junior/Senior pairs can be detected
+            decision = None
+
+            if elapsed >= DETECTION_TIME:
+                decision = decide(confirmed_ids)
+
+            # ==================================
+            # CAMERA PREVIEW
+            # ==================================
+
+            preview = display_image(
+                view, tags, variant
+            )
+
+            height, width = preview.shape[:2]
+
+            cv2.rectangle(
+                preview,
+                (0, height - 90),
+                (width, height),
+                (40, 40, 40),
+                -1
+            )
+
+            if decision:
+                status = f"{decision} NEEDS POWER"
+                color = (0, 255, 0)
+
+            else:
+                status = "SCANNING APRILTAGS..."
+                color = (255, 255, 255)
+
+            cv2.putText(
+                preview,
+                status,
+                (10, height - 52),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                color,
+                2
+            )
+
+            cv2.putText(
+                preview,
+                f"Confirmed IDs: {sorted(confirmed_ids)}",
+                (10, height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1
+            )
+
+            show_window(WINDOW_NAME, preview)
+
+            if decision:
+                print("Detected IDs:", confirmed_ids)
+                print("DECISION:", decision)
+                return decision
+
+        print("No unambiguous decision")
+        print("Confirmed IDs:", confirmed_ids)
+        return None
+
+    finally:
+        if camera is not None:
+            camera.close()
+
+        close_windows()
+
+
+# ==========================================
+# MAIN PROGRAM
+# ==========================================
+
+def main():
+
+    motor = QuarkyMiniExpansion()
+    motor.miniinitialise()
+
+    try:
+        motor.stopmotor(MOTOR_1)
+        motor.stopmotor(MOTOR_2)
+
+        # STEP 1: Scan and decide
+        decision = scan_power()
+
+        if decision is None:
+            print("No valid decision. Robot stopped.")
+            return
+
+        # ==================================
+        # STEP 2: MUST MOVEMENT
+        # ==================================
+
+        print("Executing MUST movement")
+
+        # Motor 1 backward 65% for 1 second
+        motor.runmotor(MOTOR_1, BACKWARD, 65)
+        time.sleep(1)
+        motor.stopmotor(MOTOR_1)
+
+        # Wait 1 second
+        time.sleep(1)
+
+        # ==================================
+        # STEP 3: RESIDENTIAL MOVEMENT
+        # ==================================
+
+        if decision == "RESIDENTIAL":
+
+            print("Executing RESIDENTIAL movement")
+
+            # Motor 1 backward 75% for 0.8 sec
+            motor.runmotor(MOTOR_1, BACKWARD, 75)
+            time.sleep(0.8)
+            motor.stopmotor(MOTOR_1)
+
+            # Wait 1 second
+            time.sleep(1)
+
+            # Motor 1 forward 75% for 0.8 sec
+            motor.runmotor(MOTOR_1, FORWARD, 75)
+            time.sleep(0.8)
+            motor.stopmotor(MOTOR_1)
+
+            # Wait 1 second
+            time.sleep(1)
+
+        # ==================================
+        # STEP 4: BUSINESS MOVEMENT
+        # ==================================
+
+        elif decision == "BUSINESS":
+
+            print("Executing BUSINESS movement")
+
+            # Motor 2 forward 65% for 1 second
+            motor.runmotor(MOTOR_2, FORWARD, 65)
+            time.sleep(1)
+            motor.stopmotor(MOTOR_2)
+
+            # Wait 1 second
+            time.sleep(1)
+
+            # Motor 2 backward 65% for 1 second
+            motor.runmotor(MOTOR_2, BACKWARD, 65)
+            time.sleep(1)
+            motor.stopmotor(MOTOR_2)
+
+        print("Challenge 6 completed!")
 
     except KeyboardInterrupt:
-        pass
+        print("Program interrupted")
+
+    except Exception as error:
+        print("Error:", error)
+
     finally:
-        try:
-            stop_motors(board)
-        finally:
-            if camera is not None:
-                camera.close()
-            close_windows()
-        print("Challenge 6 stopped")
+        motor.stopmotor(MOTOR_1)
+        motor.stopmotor(MOTOR_2)
+        print("Motors stopped")
 
 
 if __name__ == "__main__":
-    run_scan()
+    main()
