@@ -1,4 +1,3 @@
-
 import time
 import cv2
 import numpy as np
@@ -17,7 +16,7 @@ from April_tag_detector import (
 
 ORGANIC_TAG = ("16h5", 6)
 
-SERVO_PORT = 'S1'
+SERVO_PORT = "S1"
 
 MOTOR_1 = "L"
 MOTOR_2 = "R"
@@ -42,15 +41,17 @@ def stop(motor):
 
 # ==========================================
 # APRILTAG DETECTION
+# Returns: "organic", "inorganic", or None
 # ==========================================
 
 def normalize_family(family):
     if isinstance(family, bytes):
         family = family.decode("utf-8")
+
     return str(family).lower().replace("tag", "").strip()
 
 
-def wait_for_organic(camera, scanner):
+def wait_for_classification(camera, scanner):
 
     print("Starting AprilTag detection...")
 
@@ -59,19 +60,19 @@ def wait_for_organic(camera, scanner):
     matches = 0
     last_detected = None
     frames_received = 0
+    last_classification = None
 
     while time.monotonic() - start < SCAN_TIMEOUT:
 
         key = read_key()
 
         if key in (ord("q"), ord("Q"), 27):
-            print("Scanning cancelled")
-            return False
+            print("Scanning cancelled.")
+            return None
 
         try:
-            frame, sequence = camera.read_new(
-                last_sequence
-            )
+            frame, sequence = camera.read_new(last_sequence)
+
         except Exception as exc:
             print("Camera read error:", exc)
             time.sleep(0.01)
@@ -96,17 +97,39 @@ def wait_for_organic(camera, scanner):
         for tag in tags:
             family = normalize_family(tag["family"])
             tag_id = int(tag["id"])
+
             detected_tags.append((family, tag_id))
 
-        current = tuple(sorted(detected_tags))
-
-        if current != last_detected:
+        if tuple(sorted(detected_tags)) != last_detected:
             print("Detected AprilTags:", detected_tags)
-            last_detected = current
+            last_detected = tuple(sorted(detected_tags))
 
-        organic = ORGANIC_TAG in detected_tags
+        # ==================================
+        # CLASSIFY ORGANIC OR INORGANIC
+        # ==================================
 
-        matches = matches + 1 if organic else 0
+        if ORGANIC_TAG in detected_tags:
+            classification = "organic"
+
+        elif any(
+            family == ORGANIC_TAG[0]
+            for family, tag_id in detected_tags
+        ):
+            classification = "inorganic"
+
+        else:
+            classification = None
+
+        # Require consecutive matching classifications.
+        if classification is not None:
+            if classification == last_classification:
+                matches += 1
+            else:
+                last_classification = classification
+                matches = 1
+        else:
+            matches = 0
+            last_classification = None
 
         # ==================================
         # CAMERA PREVIEW
@@ -124,12 +147,14 @@ def wait_for_organic(camera, scanner):
             dtype=np.uint8
         )
 
-        if organic:
+        if classification == "organic":
             status = "ORGANIC DETECTED"
             color = (0, 255, 0)
-        elif detected_tags:
-            status = "TAG FOUND - NOT ORGANIC"
+
+        elif classification == "inorganic":
+            status = "INORGANIC DETECTED"
             color = (0, 165, 255)
+
         else:
             status = "SCANNING APRILTAG..."
             color = (0, 255, 255)
@@ -144,11 +169,9 @@ def wait_for_organic(camera, scanner):
             2
         )
 
-        tag_text = str(detected_tags)
-
         cv2.putText(
             panel,
-            "Tags: " + tag_text[:55],
+            "Tags: " + str(detected_tags)[:55],
             (10, 62),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
@@ -158,7 +181,7 @@ def wait_for_organic(camera, scanner):
 
         cv2.putText(
             panel,
-            f"Organic matches: {matches}/{REQUIRED_MATCHES}",
+            f"Matches: {matches}/{REQUIRED_MATCHES}",
             (10, 88),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
@@ -167,17 +190,141 @@ def wait_for_organic(camera, scanner):
         )
 
         output = np.vstack((preview, panel))
-
         show_window(WINDOW_NAME, output)
 
         if matches >= REQUIRED_MATCHES:
-            print("ORGANIC CONFIRMED:", ORGANIC_TAG)
-            return True
+            print("CLASSIFICATION CONFIRMED:", classification)
+            return classification
 
     print("Scan timeout.")
     print("Camera frames received:", frames_received)
     print("Last detected tags:", last_detected)
-    return False
+
+    return None
+
+
+# ==========================================
+# ORGANIC SEQUENCE
+# Existing movement sequence preserved
+# ==========================================
+
+def run_organic_sequence(servo, motor):
+
+    print("Executing existing organic sequence...")
+
+    # Block 1: Wait 1 second
+    time.sleep(1)
+
+    # Block 2: Motor 1 backward at 70%
+    motor.runmotor(MOTOR_1, BACKWARD, 70)
+
+    # Block 3: Motor 2 forward at 70%
+    motor.runmotor(MOTOR_2, FORWARD, 70)
+
+    # Block 4: Wait 0.9 seconds
+    time.sleep(0.9)
+
+    # Block 5: Stop robot
+    stop(motor)
+
+    # Block 6: Wait 1 second
+    time.sleep(1)
+
+    # Block 7: Servo S1 -> 20 degrees
+    servo.moveservointime(SERVO_PORT, 20, 1)
+
+    # Block 8: Wait 1 second
+    time.sleep(1)
+
+    # Block 9: Motor 1 forward at 70%
+    motor.runmotor(MOTOR_1, FORWARD, 70)
+
+    # Block 10: Motor 2 backward at 70%
+    motor.runmotor(MOTOR_2, BACKWARD, 70)
+
+    # Block 11: Wait 1.2 seconds
+    time.sleep(1.2)
+
+    # Block 12: Stop robot
+    stop(motor)
+
+    # Block 13: Wait 1 second
+    time.sleep(1)
+
+    # Block 14: Motor 2 forward at 55% for 1 second
+    motor.runmotor(MOTOR_2, BACKWARD, 55)
+    time.sleep(1)
+    motor.stopmotor(MOTOR_2)
+
+    # Block 15: Wait 1 second
+    time.sleep(1)
+
+    # Block 16: Servo S1 -> 90 degrees
+    servo.moveservointime(SERVO_PORT, 90, 1)
+
+    # Block 17: Wait 0.3 seconds
+    time.sleep(0.3)
+
+    # Block 18: Motor 1 forward at 80%
+    motor.runmotor(MOTOR_1, FORWARD, 80)
+
+    # Block 19: Motor 2 backward at 80%
+    motor.runmotor(MOTOR_2, BACKWARD, 80)
+
+    # Block 20: Wait 1 second
+    time.sleep(1)
+
+    # Block 21: Stop robot
+    stop(motor)
+
+
+# ==========================================
+# INORGANIC EXTRA SEQUENCE
+# Executes BEFORE the organic sequence
+# ==========================================
+
+def run_inorganic_sequence(motor):
+
+    print("Executing additional inorganic blocks...")
+
+    # Image Block 1:
+    # Motor 1 backward at 70%
+    motor.runmotor(MOTOR_1, BACKWARD, 70)
+
+    # Image Block 2: Wait 1 second
+    time.sleep(1)
+
+    # Image Block 3: Stop robot
+    stop(motor)
+
+    # Image Block 4: Wait 1 second
+    time.sleep(1)
+
+    # Image Block 5:
+    # Motor 2 backward at 60%
+    motor.runmotor(MOTOR_2, BACKWARD, 60)
+
+    # Image Block 6: Wait 1 second
+    time.sleep(1)
+
+    # Image Block 7: Stop robot
+    stop(motor)
+    
+    motor.runmotor(MOTOR_1, BACKWARD, 80)
+
+    # Block 19: Motor 2 backward at 80%
+    motor.runmotor(MOTOR_2, FORWARD, 80)
+
+    # Block 20: Wait 1 second
+    time.sleep(0.8)
+
+    # Block 21: Stop robot
+    stop(motor)
+    time.sleep(1)
+ 
+    
+
+    print("Additional inorganic blocks completed.")
 
 
 # ==========================================
@@ -197,25 +344,26 @@ def main():
         stop(motor)
 
         # ==================================
-        # UPDATED: INITIAL SERVO POSITION
+        # INITIAL SERVO POSITION
         # ==================================
 
-        print("Initializing servo to 70 degrees...")
+        print("Initializing servo to 90 degrees...")
 
-        servo.moveservointime(
-            SERVO_PORT, 70, 1
-        )
-
+        servo.moveservointime(SERVO_PORT, 90, 1)
         time.sleep(1)
 
         print("Servo initialization completed.")
 
-        # Block 2: Motor 2 forward 67% for 1 sec
+        # ==================================
+        # INITIAL MOTOR MOVEMENT
+        # ==================================
+
+        # Motor 2 forward at 67% for 1 second
         motor.runmotor(MOTOR_2, FORWARD, 67)
         time.sleep(1)
         motor.stopmotor(MOTOR_2)
 
-        print("Initial turn completed")
+        print("Initial motor movement completed.")
 
         # ==================================
         # CAMERA INITIALIZATION
@@ -251,84 +399,47 @@ def main():
         )
 
         # ==================================
-        # ORGANIC CONDITION
+        # CLASSIFY WASTE
         # ==================================
 
-        if not wait_for_organic(camera, scanner):
-            print("Organic not confirmed.")
+        result = wait_for_classification(camera, scanner)
+
+        if result is None:
+            print("Classification unsuccessful or cancelled.")
+            stop(motor)
             return
 
-        print("Executing remaining blocks")
+        # ==================================
+        # BRANCH: INORGANIC
+        # ==================================
 
-        # Block 3: Wait 1 second
-        time.sleep(1)
+        if result == "inorganic":
 
-        # Block 4: Motor 1 forward 70%
-        motor.runmotor(MOTOR_1, BACKWARD, 70)
+            print("INORGANIC WASTE CONFIRMED.")
 
-        # Block 5: Motor 2 forward 70%
-        motor.runmotor(MOTOR_2, FORWARD, 70)
+            # Run extra blocks only for inorganic waste.
+            run_inorganic_sequence(motor)
 
-        # Block 6: Wait 0.9 seconds
-        time.sleep(0.9)
+        # ==================================
+        # BRANCH: ORGANIC
+        # ==================================
 
-        # Block 7: Stop robot
-        stop(motor)
+        elif result == "organic":
 
-        # Block 8: Wait 1 second
-        time.sleep(1)
+            print("ORGANIC WASTE CONFIRMED.")
+            print("Skipping additional inorganic blocks.")
 
-        # Block 9: Servo S1 -> 20 degrees in 1 sec
-        servo.moveservointime(SERVO_PORT, 20, 1)
+        # ==================================
+        # COMMON REMAINING SEQUENCE
+        # Both classifications reach this point.
+        # ==================================
 
-        # Block 10: Wait 1 second
-        time.sleep(1)
+        run_organic_sequence(servo, motor)
 
-        # Block 11: Motor 1 backward 70%
-        motor.runmotor(MOTOR_1, FORWARD, 70)
-
-        # Block 12: Motor 2 backward 70%
-        motor.runmotor(MOTOR_2, BACKWARD, 70)
-
-        # Block 13: Wait 1.2 seconds
-        time.sleep(1.2)
-
-        # Block 14: Stop robot
-        stop(motor)
-
-        # Block 15: Wait 1 second
-        time.sleep(1)
-
-        # Block 16: Motor 2 forward 55% for 1 sec
-        motor.runmotor(MOTOR_2, FORWARD, 55)
-        time.sleep(1)
-        motor.stopmotor(MOTOR_2)
-
-        # Block 17: Wait 1 second
-        time.sleep(1)
-
-        # Block 18: Servo S1 -> 70 degrees
-        servo.moveservointime(SERVO_PORT, 70, 1)
-
-        # Block 19: Wait 0.3 seconds
-        time.sleep(0.3)
-
-        # Block 20: Motor 1 backward 80%
-        motor.runmotor(MOTOR_1, FORWARD, 80)
-
-        # Block 21: Motor 2 backward 80%
-        motor.runmotor(MOTOR_2, BACKWARD, 80)
-
-        # Wait 1 second
-        time.sleep(1)
-
-        # Stop robot
-        stop(motor)
-
-        print("Challenge completed!")
+        print("Challenge completed successfully!")
 
     except KeyboardInterrupt:
-        print("Program interrupted")
+        print("Program interrupted.")
 
     except Exception as exc:
         print("Program error:", exc)
